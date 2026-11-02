@@ -85,7 +85,7 @@ html,body{height:100%;overflow:hidden;background:#0b1220;font-family:"PingFang S
 <div id="navHud" style="display:none"><div id="navArrow">⬆</div><div id="navTxt"></div></div>
 <canvas id="mini" width="188" height="132"></canvas>
 <div id="speedHud"><b id="speedEl">0</b><span>km/h</span></div>
-<div id="hint">W 油门 · S 刹车/倒车 · A/D 转向 · 抢单后跟着金色箭头和光柱走 · M 静音</div>
+<div id="hint">W 油门 · S 刹车/倒车 · A/D 转向 · 跟着箭头和光柱走 · 红灯别闯（罚款）· 小心车流和行人 · M 静音</div>
 <div class="tbtn" id="btnL">◀ 左</div><div class="tbtn" id="btnR">右 ▶</div>
 <div class="tbtn" id="btnBrk">刹车</div><div class="tbtn" id="btnGas">油门</div>
 
@@ -96,6 +96,7 @@ html,body{height:100%;overflow:hidden;background:#0b1220;font-family:"PingFang S
     ① 右侧大厅<b style="color:#ffd34d">抢单</b>（最多 3 单）<br>
     ② 跟着<b style="color:#ffd34d">金色箭头</b>和<b style="color:#7cc4ff">蓝色光柱</b>去商家取餐，出餐没好要等<br>
     ③ 再跟<b style="color:#6fe3b4">绿色光柱</b>送到顾客，准时全款，超时七折扣评分<br>
+    街上有<b style="color:#ffd34d">车流和红绿灯</b>：闯红灯罚款 ¥10（日结扣），撞车扣分，高速撞到行人订单全掉。<br>
     雨天订单 +20% 激励但路面更滑。今天目标：<span class="big">赚到 ¥260</span></p>
     <button id="startBtn">上线开跑</button>
   </div>
@@ -144,48 +145,132 @@ SHOPS.forEach(function(s){
 var renderer=new THREE.WebGLRenderer({canvas:document.getElementById('c3d'),antialias:true});
 renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
 renderer.setSize(window.innerWidth,window.innerHeight);
-renderer.shadowMap.enabled=false;
+renderer.outputEncoding=THREE.sRGBEncoding;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.12;
+renderer.shadowMap.enabled=location.search.indexOf('qa')<0;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
 var scene=new THREE.Scene();
 scene.background=new THREE.Color(0x87b5dd);
 scene.fog=new THREE.Fog(0x9db9d6,120,420);
 var camera=new THREE.PerspectiveCamera(62,window.innerWidth/window.innerHeight,0.1,900);
-var sun=new THREE.DirectionalLight(0xfff2d8,1.05);sun.position.set(120,180,60);scene.add(sun);
-scene.add(new THREE.AmbientLight(0xbdd3ea,0.88));
+var sun=new THREE.DirectionalLight(0xfff2d8,1.05);
+sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048);
+sun.shadow.camera.left=-58;sun.shadow.camera.right=58;sun.shadow.camera.top=58;sun.shadow.camera.bottom=-58;
+sun.shadow.camera.near=10;sun.shadow.camera.far=420;sun.shadow.bias=-0.0006;
+sun.position.set(120,180,60);scene.add(sun);scene.add(sun.target);
+scene.add(new THREE.AmbientLight(0xbdd3ea,0.5));
+scene.add(new THREE.HemisphereLight(0xcfe5ff,0x51663f,0.55));
+// 云（精灵贴图，缓慢漂移）
+var clouds=[];
+(function makeClouds(){
+  var cv=document.createElement('canvas');cv.width=256;cv.height=128;var g=cv.getContext('2d');
+  for(var i=0;i<16;i++){var x=40+Math.random()*176,y=44+Math.random()*40,r=18+Math.random()*26;
+    var gr=g.createRadialGradient(x,y,2,x,y,r);gr.addColorStop(0,'rgba(255,255,255,0.55)');gr.addColorStop(1,'rgba(255,255,255,0)');
+    g.fillStyle=gr;g.beginPath();g.arc(x,y,r,0,6.29);g.fill();}
+  var tex=new THREE.CanvasTexture(cv);
+  for(var j=0;j<14;j++){
+    var sm=new THREE.SpriteMaterial({map:tex,transparent:true,opacity:0.5+Math.random()*0.35,depthWrite:false,fog:false});
+    var sp=new THREE.Sprite(sm);var sc=46+Math.random()*55;
+    sp.scale.set(sc,sc*0.45,1);
+    sp.position.set((Math.random()-0.5)*700,58+Math.random()*38,(Math.random()-0.5)*560);
+    scene.add(sp);clouds.push(sp);
+  }
+})();
 window.addEventListener('resize',function(){camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);});
 
-// 地面（草地色）+ 道路网（canvas 贴图）
+// 地面：整城一张贴图（沥青路/人行道/草坪地块/斑马线/车道线），2000x1400 对应 600x420 米
 function groundTexture(){
-  var cv=document.createElement('canvas');cv.width=cv.height=1024;var g=cv.getContext('2d');
-  g.fillStyle='#5d7d4a';g.fillRect(0,0,1024,1024);
-  g.fillStyle='#3d4756';
-  var cell=1024/10; // 每格 = 60 米 = 一个街区+路
-  for(var i=0;i<10;i++){g.fillRect(i*cell,0,cell*0.22,1024);g.fillRect(0,i*cell,1024,cell*0.22);}
-  g.strokeStyle='rgba(255,255,255,0.55)';g.setLineDash([14,16]);g.lineWidth=3;
-  for(var j=0;j<10;j++){g.beginPath();g.moveTo(j*cell+cell*0.11,0);g.lineTo(j*cell+cell*0.11,1024);g.stroke();g.beginPath();g.moveTo(0,j*cell+cell*0.11);g.lineTo(1024,j*cell+cell*0.11);g.stroke();}
-  var tx=new THREE.CanvasTexture(cv);tx.wrapS=tx.wrapT=THREE.RepeatWrapping;tx.repeat.set(1,0.7);return tx;
+  var W=2000,H=1400,K=W/3000; // px空间 -> 贴图坐标系数
+  var cv=document.createElement('canvas');cv.width=W;cv.height=H;var g=cv.getContext('2d');
+  g.fillStyle='#3f4854';g.fillRect(0,0,W,H); // 沥青
+  var n,i,j,x,y;
+  for(n=0;n<5200;n++){g.fillStyle=Math.random()<0.5?'rgba(255,255,255,0.045)':'rgba(0,0,0,0.06)';g.fillRect(Math.random()*W,Math.random()*H,2.4,2.4);}
+  // 车道磨损带（沿路中心两侧）
+  g.fillStyle='rgba(0,0,0,0.10)';
+  for(i=0;i<10;i++){g.fillRect((i*300+32-17)*K,0,7,H);g.fillRect((i*300+32+10)*K,0,7,H);}
+  for(j=0;j<7;j++){g.fillRect(0,(j*300+32-17)*K,W,7);g.fillRect(0,(j*300+32+10)*K,W,7);}
+  // 街区：人行道板 + 草坪
+  for(var bx=0;bx<10;bx++)for(var by=0;by<7;by++){
+    x=(bx*300+64)*K;y=(by*300+64)*K;var sz=236*K;
+    g.fillStyle='#98a1ab';g.fillRect(x,y,sz,sz);
+    g.fillStyle='rgba(255,255,255,0.10)';g.fillRect(x,y,sz,3);
+    var gr=g.createLinearGradient(x,y,x+sz,y+sz);
+    var hue=86+((bx*7+by*13)%14);
+    gr.addColorStop(0,'hsl('+hue+',32%,'+(40+((bx+by)%5))+'%)');gr.addColorStop(1,'hsl('+hue+',30%,'+(34+((bx*3+by)%4))+'%)');
+    g.fillStyle=gr;g.fillRect(x+7.3,y+7.3,sz-14.6,sz-14.6);
+    for(n=0;n<26;n++){g.fillStyle='rgba(0,0,0,0.05)';g.fillRect(x+9+Math.random()*(sz-18),y+9+Math.random()*(sz-18),3,2);}
+  }
+  // 斑马线（每个路口四向）
+  g.fillStyle='rgba(240,244,248,0.75)';
+  for(i=0;i<10;i++)for(j=0;j<7;j++){
+    var cx=(i*300+32)*K,cy=(j*300+32)*K,s;
+    for(s=-2;s<=2;s++){
+      g.fillRect(cx-19*K*1.5+s*11,cy-52*K,6.5,20*K); // 北侧横穿（竖路）
+      g.fillRect(cx-19*K*1.5+s*11,cy+34*K,6.5,20*K); // 南侧
+      g.fillRect(cx-52*K,cy-19*K*1.5+s*11,20*K,6.5); // 西侧
+      g.fillRect(cx+34*K,cy-19*K*1.5+s*11,20*K,6.5); // 东侧
+    }
+  }
+  // 车道中心虚线
+  g.strokeStyle='rgba(255,255,255,0.6)';g.lineWidth=2.6;g.setLineDash([17,15]);
+  for(i=0;i<10;i++){g.beginPath();g.moveTo((i*300+32)*K,0);g.lineTo((i*300+32)*K,H);g.stroke();}
+  for(j=0;j<7;j++){g.beginPath();g.moveTo(0,(j*300+32)*K);g.lineTo(W,(j*300+32)*K);g.stroke();}
+  g.setLineDash([]);
+  var tx=new THREE.CanvasTexture(cv);
+  tx.encoding=THREE.sRGBEncoding;
+  tx.anisotropy=renderer.capabilities.getMaxAnisotropy();
+  return tx;
 }
 var ground=new THREE.Mesh(new THREE.PlaneGeometry(600,420),new THREE.MeshLambertMaterial({map:groundTexture()}));
-ground.rotation.x=-Math.PI/2;scene.add(ground);
+ground.rotation.x=-Math.PI/2;ground.receiveShadow=true;scene.add(ground);
 
-// 建筑（每栋楼一个 box，窗户贴图）
-function facadeTexture(base,win){
-  var cv=document.createElement('canvas');cv.width=64;cv.height=128;var g=cv.getContext('2d');
-  g.fillStyle=base;g.fillRect(0,0,64,128);
-  for(var y=8;y<120;y+=14)for(var x=6;x<56;x+=12){g.fillStyle=Math.random()<0.42?win:'#2b3648';g.fillRect(x,y,7,9);}
-  return new THREE.CanvasTexture(cv);
+// 建筑立面（5 种：玻璃幕墙/高层/砖楼/住宅/办公，带亮窗、底层商铺、空调外机）
+function facadeTexture(kind){
+  var cv=document.createElement('canvas');cv.width=128;cv.height=256;var g=cv.getContext('2d');
+  var bases={glass:['#7fa8c9','#55779e'],tower:['#4d6076','#39485c'],brick:['#9a6a58','#7d5343'],home:['#b09a7d','#8f795e'],office:['#8d99a6','#6e7a88']};
+  var b=bases[kind]||bases.office;
+  var gr=g.createLinearGradient(0,0,0,256);gr.addColorStop(0,b[0]);gr.addColorStop(1,b[1]);
+  g.fillStyle=gr;g.fillRect(0,0,128,256);
+  var cols=kind==='tower'?7:6, rows=13, cw=128/cols, rh=216/rows;
+  for(var r=0;r<rows;r++)for(var c=0;c<cols;c++){
+    var x=c*cw+cw*0.18, y=8+r*rh+2, w=cw*0.64, h=rh*0.58, lit=Math.random();
+    if(kind==='home'&&r%2===0){g.fillStyle='rgba(0,0,0,0.18)';g.fillRect(c*cw,8+r*rh+rh-3,cw,3);} // 阳台板
+    g.fillStyle='rgba(255,255,255,0.35)';g.fillRect(x-1,y-1,w+2,h+2);
+    if(kind==='glass'){var gg=g.createLinearGradient(x,y,x+w,y+h);gg.addColorStop(0,'#cfe6f7');gg.addColorStop(0.5,'#7d9fbd');gg.addColorStop(1,'#a8c4dc');g.fillStyle=lit<0.16?'#ffd98a':gg;}
+    else g.fillStyle=lit<0.34?(Math.random()<0.5?'#ffd98a':'#fff0bd'):(lit<0.5?'#54708c':'#2c3e52');
+    g.fillRect(x,y,w,h);
+    if(kind==='brick'&&Math.random()<0.16){g.fillStyle='#cfd4d9';g.fillRect(x,y+h+2,7,5);} // 空调外机
+  }
+  // 底层商铺
+  g.fillStyle='rgba(15,20,30,0.55)';g.fillRect(0,226,128,30);
+  g.fillStyle='rgba(255,255,255,0.16)';g.fillRect(4,232,36,18);g.fillRect(48,232,36,18);g.fillRect(92,232,32,18);
+  if(Math.random()<0.7){g.fillStyle=['#e2574c','#f0a13a','#3f9d63','#4a7fc9'][Math.floor(Math.random()*4)];g.fillRect(0,222,128,5);}
+  var tx=new THREE.CanvasTexture(cv);tx.encoding=THREE.sRGBEncoding;return tx;
 }
-var FACADES=[facadeTexture('#8a93a6','#ffe9a8'),facadeTexture('#a67c6b','#fff3c4'),facadeTexture('#6f8296','#dff2ff'),facadeTexture('#97907e','#ffe9a8'),facadeTexture('#7d7468','#fff3c4')];
+var FACADES={glass:facadeTexture('glass'),tower:facadeTexture('tower'),brick:facadeTexture('brick'),home:facadeTexture('home'),office:facadeTexture('office')};
+var ROOFMAT=new THREE.MeshLambertMaterial({color:0x39424e});
+var TANKMAT=new THREE.MeshLambertMaterial({color:0x707a88});
 var BUILDINGS=[]; // {minX,maxX,minZ,maxZ}
 (function buildCity(){
   var geoCache={};
-  function boxGeo(w,h,d){var k=w+'_'+h+'_'+d;if(!geoCache[k])geoCache[k]=new THREE.BoxGeometry(w,h,d);return geoCache[k];}
+  function boxGeo(w,h,d){var k=w.toFixed(1)+'_'+h.toFixed(1)+'_'+d.toFixed(1);if(!geoCache[k])geoCache[k]=new THREE.BoxGeometry(w,h,d);return geoCache[k];}
+  var tankGeo=new THREE.CylinderGeometry(1.1,1.1,1.8,10), shedGeo=new THREE.BoxGeometry(2.4,1.3,2.4);
   for(var bx=0;bx<10;bx++)for(var by=0;by<7;by++){
     for(var i=0;i<2;i++)for(var j=0;j<2;j++){
       // 楼中心（px 空间）：块内 2x2，中心距道路网格 108/186，楼宽 72px=14.4m
-      var wx=(bx*300+108+i*78)/S-300, wz=(by*300+108+j*78)/S-210;
-      var w=14.4+Math.random()*1.6,d=14.4+Math.random()*1.6,h=10+Math.random()*26;
-      var m=new THREE.Mesh(boxGeo(w,h,d),new THREE.MeshLambertMaterial({map:FACADES[(bx+by+i+j)%FACADES.length]}));
-      m.position.set(wx,h/2,wz);scene.add(m);
+      var cpx=bx*300+108+i*78, cpy=by*300+108+j*78;
+      var wx=cpx/S-300, wz=cpy/S-210;
+      var w=14.4+Math.random()*1.6,d=14.4+Math.random()*1.6;
+      var dc=districtAt(cpx,cpy);
+      var h=dc.name==='商务区'?24+Math.random()*20:(dc.name==='大学城'?12+Math.random()*16:10+Math.random()*24);
+      var kind=h>27?(Math.random()<0.5?'glass':'tower'):['brick','home','office','home'][Math.floor(Math.random()*4)];
+      var side=new THREE.MeshLambertMaterial({map:FACADES[kind]});
+      var m=new THREE.Mesh(boxGeo(w,h,d),[side,side,ROOFMAT,ROOFMAT,side,side]);
+      m.position.set(wx,h/2,wz);m.castShadow=true;m.receiveShadow=true;scene.add(m);
+      if(Math.random()<0.4){var shed=new THREE.Mesh(shedGeo,TANKMAT);shed.position.set(wx+(Math.random()*6-3),h+0.65,wz+(Math.random()*6-3));shed.castShadow=true;scene.add(shed);}
+      if(Math.random()<0.22){var tank=new THREE.Mesh(tankGeo,TANKMAT);tank.position.set(wx+(Math.random()*7-3.5),h+0.9,wz+(Math.random()*7-3.5));tank.castShadow=true;scene.add(tank);}
       BUILDINGS.push({minX:wx-w/2-0.7,maxX:wx+w/2+0.7,minZ:wz-d/2-0.7,maxZ:wz+d/2+0.7});
     }
   }
@@ -199,23 +284,297 @@ SHOPS.forEach(function(s){
   var roof=new THREE.Mesh(new THREE.ConeGeometry(5.6,2.2,4),new THREE.MeshLambertMaterial({color:0xd9483b}));
   roof.position.set(p.x,4.5,p.z);roof.rotation.y=Math.PI/4;scene.add(roof);
   shopMeshes[s.name]=hut;
+  // 招牌（店名）
+  var scv=document.createElement('canvas');scv.width=256;scv.height=64;var sg=scv.getContext('2d');
+  sg.fillStyle='#20303f';sg.fillRect(0,0,256,64);sg.fillStyle='#ffd34d';sg.fillRect(0,56,256,8);
+  sg.fillStyle='#ffffff';sg.font='700 34px sans-serif';sg.textAlign='center';sg.fillText(s.name,128,42);
+  var stx=new THREE.CanvasTexture(scv);stx.encoding=THREE.sRGBEncoding;
+  var sign=new THREE.Mesh(new THREE.PlaneGeometry(6.4,1.6),new THREE.MeshBasicMaterial({map:stx}));
+  sign.position.set(p.x-3.9,4.4,p.z);sign.rotation.y=-Math.PI/2;scene.add(sign);
 });
-// ============ 玩家电动车（方块拼装） ============
+
+// ============ 街道设施：行道树 / 路灯（实例化） ============
+var lampHeadMat=new THREE.MeshBasicMaterial({color:0x8a8f7a});
+(function buildProps(){
+  var dummy=new THREE.Object3D();
+  // 行道树：街区四角
+  var spots=[];
+  for(var bx=0;bx<10;bx++)for(var by=0;by<7;by++){
+    [[58,58],[58,242],[242,58],[242,242]].forEach(function(o){if(Math.random()<0.62)spots.push([bx*300+o[0]+(Math.random()*14-7),by*300+o[1]+(Math.random()*14-7)]);});
+  }
+  var trunkI=new THREE.InstancedMesh(new THREE.CylinderGeometry(0.09,0.14,1.2,6),new THREE.MeshLambertMaterial({color:0x6d4c33}),spots.length);
+  var leafI=new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1.05,0),new THREE.MeshLambertMaterial({color:0x4e7d3a,flatShading:true}),spots.length);
+  spots.forEach(function(sp,i){
+    var p=W2D(sp[0],sp[1]),sc=0.8+Math.random()*0.6;
+    dummy.rotation.set(0,Math.random()*3,0);dummy.scale.set(sc,sc,sc);
+    dummy.position.set(p.x,0.6*sc,p.z);dummy.updateMatrix();trunkI.setMatrixAt(i,dummy.matrix);
+    dummy.position.set(p.x,(1.2+0.75)*sc,p.z);dummy.updateMatrix();leafI.setMatrixAt(i,dummy.matrix);
+  });
+  trunkI.castShadow=true;leafI.castShadow=true;scene.add(trunkI);scene.add(leafI);
+  // 路灯：路口东北角
+  var lampSpots=[];
+  for(var i=0;i<10;i++)for(var j=0;j<7;j++){if((i+j)%2===0)lampSpots.push([i*300+74,j*300-8]);}
+  var poleI=new THREE.InstancedMesh(new THREE.CylinderGeometry(0.07,0.07,4.8,6),new THREE.MeshLambertMaterial({color:0x3c4450}),lampSpots.length);
+  var headI=new THREE.InstancedMesh(new THREE.SphereGeometry(0.17,8,8),lampHeadMat,lampSpots.length);
+  lampSpots.forEach(function(sp,i){
+    var p=W2D(sp[0],sp[1]);dummy.rotation.set(0,0,0);dummy.scale.set(1,1,1);
+    dummy.position.set(p.x,2.4,p.z);dummy.updateMatrix();poleI.setMatrixAt(i,dummy.matrix);
+    dummy.position.set(p.x,4.85,p.z);dummy.updateMatrix();headI.setMatrixAt(i,dummy.matrix);
+  });
+  scene.add(poleI);scene.add(headI);
+})();
+
+// ============ 通用小汽车（AI 车流与停放共用） ============
+function makeCar(color){
+  var g=new THREE.Group();
+  function bx(w,h,d,c,x,y,z){var m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshLambertMaterial({color:c}));m.position.set(x,y,z);m.castShadow=true;g.add(m);return m;}
+  bx(1.8,0.52,4.3,color,0,0.56,0);
+  bx(1.62,0.5,2.1,0x1d2735,0,1.06,-0.25);
+  bx(1.84,0.16,0.9,color,0,0.62,1.85);
+  var wg=new THREE.CylinderGeometry(0.34,0.34,0.16,10),wm=new THREE.MeshLambertMaterial({color:0x14181f});
+  [[-0.85,1.35],[0.85,1.35],[-0.85,-1.35],[0.85,-1.35]].forEach(function(p){var w=new THREE.Mesh(wg,wm);w.rotation.z=Math.PI/2;w.position.set(p[0],0.34,p[1]);g.add(w);});
+  var hl=new THREE.Mesh(new THREE.BoxGeometry(1.5,0.12,0.05),new THREE.MeshBasicMaterial({color:0xfff3c0}));hl.position.set(0,0.62,2.16);g.add(hl);
+  var tl=new THREE.Mesh(new THREE.BoxGeometry(1.5,0.1,0.05),new THREE.MeshBasicMaterial({color:0xe23b3b}));tl.position.set(0,0.66,-2.16);g.add(tl);
+  scene.add(g);return g;
+}
+var CARCOLORS=[0xd64545,0x3b82f6,0xe5e7eb,0x374151,0xf59e0b,0x10b981,0x8b5cf6,0xec4899,0x64748b,0x0ea5e9];
+// 停放车辆（路边）
+(function parkedCars(){
+  for(var i=0;i<16;i++){
+    var vert=Math.random()<0.5, line=(Math.floor(Math.random()*9)+1)*300+32, along=120+Math.random()*2600;
+    var c=makeCar(CARCOLORS[i%CARCOLORS.length]);
+    var off=(Math.random()<0.5?-24:24);
+    var px=vert?line+off:along, py=vert?along:line+off;
+    var p=W2D(px,py);c.position.set(p.x,0,p.z);
+    c.rotation.y=vert?(off>0?Math.PI:0):(off>0?-Math.PI/2:Math.PI/2);
+  }
+})();
+
+// ============ 红绿灯（实例化灯杆 + 全局相位） ============
+var INTX=[]; // 路口中心（px 空间）
+for(var ik=0;ik<10;ik++)for(var im=0;im<7;im++)INTX.push({x:ik*300+32,y:im*300+32});
+var lampNS=null,lampEW=null;
+(function buildLights(){
+  var dummy=new THREE.Object3D(),N=INTX.length;
+  var poleI=new THREE.InstancedMesh(new THREE.CylinderGeometry(0.06,0.06,4.4,6),new THREE.MeshLambertMaterial({color:0x2f3742}),N);
+  var headI=new THREE.InstancedMesh(new THREE.BoxGeometry(0.62,0.3,0.3),new THREE.MeshLambertMaterial({color:0x161c24}),N);
+  lampNS=new THREE.InstancedMesh(new THREE.SphereGeometry(0.13,8,8),new THREE.MeshBasicMaterial({color:0xffffff}),N);
+  lampEW=new THREE.InstancedMesh(new THREE.SphereGeometry(0.13,8,8),new THREE.MeshBasicMaterial({color:0xffffff}),N);
+  INTX.forEach(function(it,i){
+    var p=W2D(it.x+42,it.y-42);
+    dummy.rotation.set(0,0,0);dummy.scale.set(1,1,1);
+    dummy.position.set(p.x,2.2,p.z);dummy.updateMatrix();poleI.setMatrixAt(i,dummy.matrix);
+    dummy.position.set(p.x,4.45,p.z);dummy.updateMatrix();headI.setMatrixAt(i,dummy.matrix);
+    dummy.position.set(p.x-0.17,4.45,p.z);dummy.updateMatrix();lampNS.setMatrixAt(i,dummy.matrix);
+    dummy.position.set(p.x+0.17,4.45,p.z);dummy.updateMatrix();lampEW.setMatrixAt(i,dummy.matrix);
+  });
+  scene.add(poleI);scene.add(headI);scene.add(lampNS);scene.add(lampEW);
+})();
+function lightPhase(){return G.t%22;}
+function lightFor(axis){ // 'NS' 南北向通行 | 'EW' 东西向通行 -> 'g'|'y'|'r'
+  var ph=lightPhase();
+  if(axis==='NS')return ph<9?'g':(ph<11?'y':'r');
+  return ph<11?'r':(ph<20?'g':'y');
+}
+var _lastLightKey='';
+function refreshLightInstances(){
+  var key=lightFor('NS')+lightFor('EW');
+  if(key===_lastLightKey)return;_lastLightKey=key;
+  var cNS=lightFor('NS')==='g'?0x2fe07a:(lightFor('NS')==='y'?0xffc93c:0xff4545);
+  var cEW=lightFor('EW')==='g'?0x2fe07a:(lightFor('EW')==='y'?0xffc93c:0xff4545);
+  var c=new THREE.Color();
+  for(var i=0;i<INTX.length;i++){c.setHex(cNS);lampNS.setColorAt(i,c);c.setHex(cEW);lampEW.setColorAt(i,c);}
+  if(lampNS.instanceColor)lampNS.instanceColor.needsUpdate=true;
+  if(lampEW.instanceColor)lampEW.instanceColor.needsUpdate=true;
+}
+
+// ============ AI 车流 ============
+var CARS=[];
+(function initCars(){
+  var vLines=[332,932,1532,2132,2732],hLines=[332,932,1532,2132];
+  for(var i=0;i<12;i++){
+    var vert=i%3!==2;
+    var line=vert?vLines[i%vLines.length]:hLines[i%hLines.length];
+    var dir=Math.random()<0.5?1:-1;
+    var g=makeCar(CARCOLORS[(i*3+1)%CARCOLORS.length]);
+    CARS.push({g:g,vert:vert,line:line,dir:dir,pos:200+Math.random()*2400,spd:0,cruise:118+Math.random()*46});
+  }
+})();
+function carLane(c){return c.line+(c.vert?(c.dir>0?-16:16):(c.dir>0?16:-16));} // 右行车道偏移(px)
+function updateCars(dt){
+  for(var i=0;i<CARS.length;i++){
+    var c=CARS[i],want=c.cruise;
+    // 前方同车道车辆
+    for(var j=0;j<CARS.length;j++){
+      if(j===i)continue;var o=CARS[j];
+      if(o.vert===c.vert&&o.line===c.line&&o.dir===c.dir){
+        var gap=(o.pos-c.pos)*c.dir;
+        if(gap>0&&gap<64)want=Math.min(want,Math.max(0,(gap-40)*3));
+      }
+    }
+    // 红绿灯：接近路口且红/黄灯则停在停止线
+    var axis=c.vert?'NS':'EW';
+    var nextLine=Math.ceil(((c.pos-32)/300)-0.001)*300+32;
+    if(c.dir<0)nextLine=Math.floor(((c.pos-32)/300)+0.001)*300+32;
+    var dInt=(nextLine-c.pos)*c.dir;
+    if(dInt>0&&dInt<86&&lightFor(axis)!=='g'){
+      want=Math.min(want,Math.max(0,(dInt-52)*2.4));
+    }
+    // 玩家在前方（横向 13px 内才算同车道）
+    var lane=carLane(c);
+    var ahead=c.vert?(Math.abs(P.x-lane)<13?(P.y-c.pos)*c.dir:-1):(Math.abs(P.y-lane)<13?(P.x-c.pos)*c.dir:-1);
+    if(ahead>0&&ahead<58)want=0;
+    c.spd+=(want-c.spd)*Math.min(1,dt*2.6);
+    if(Math.abs(c.spd)<0.4&&want===0)c.spd=0;
+    c.pos+=c.dir*c.spd*dt;
+    if(c.pos>3050){c.pos=-40;}if(c.pos<-60){c.pos=3040;}
+    var wx2,wz2;
+    if(c.vert){var p1=W2D(carLane(c),c.pos);wx2=p1.x;wz2=p1.z;c.g.rotation.y=c.dir>0?0:Math.PI;}
+    else{var p2=W2D(c.pos,carLane(c));wx2=p2.x;wz2=p2.z;c.g.rotation.y=c.dir>0?Math.PI/2:-Math.PI/2;}
+    c.g.position.set(wx2,0,wz2);
+  }
+  // 与玩家碰撞（按车身朝向的窄盒：纵向车身长、横向窄，相邻车道会车不触发）
+  if(G.crashCd>0)G.crashCd-=dt;
+  for(var k=0;k<CARS.length;k++){
+    var cc=CARS[k];
+    var cx=cc.vert?carLane(cc):cc.pos, cy=cc.vert?cc.pos:carLane(cc);
+    var hit=cc.vert?(Math.abs(P.x-cx)<13&&Math.abs(P.y-cy)<24):(Math.abs(P.x-cx)<24&&Math.abs(P.y-cy)<13);
+    if(hit&&G.crashCd<=0){
+      G.crashCd=1.2;P.speed*=-0.22;G.rating=Math.max(3,Math.round((G.rating-0.03)*100)/100);
+      toast('💥 撞上汽车！评分 -0.03');sfx('late');G.shake=0.55;
+    }
+  }
+}
+
+// ============ 行人（沿街区人行道绕行，会躲车） ============
+var PEDS=[];
+(function initPeds(){
+  var cols=[0xe2574c,0x3f9d63,0x4a7fc9,0xf0a13a,0x9b59b6,0xec7aa5,0x2ec4b6];
+  for(var i=0;i<14;i++){
+    var bx=Math.floor(Math.random()*10),by=Math.floor(Math.random()*7);
+    var g=new THREE.Group();
+    var body=new THREE.Mesh(new THREE.CylinderGeometry(0.17,0.2,0.78,8),new THREE.MeshLambertMaterial({color:cols[i%cols.length]}));body.position.y=0.72;body.castShadow=true;g.add(body);
+    var head=new THREE.Mesh(new THREE.SphereGeometry(0.15,10,8),new THREE.MeshLambertMaterial({color:0xffd9b3}));head.position.y=1.32;g.add(head);
+    scene.add(g);
+    PEDS.push({g:g,bx:bx,by:by,s:Math.random()*776,spd:24+Math.random()*10,dodgeT:0,dodgeX:0,dodgeY:0,offX:0,offY:0,ph:Math.random()*6});
+  }
+})();
+function pedPathPoint(pd){
+  // 街区人行道矩形周界（px）：边距 52..248
+  var x0=pd.bx*300+52,y0=pd.by*300+52,per=196,total=per*4;
+  var s=((pd.s%total)+total)%total, x,y,dx,dy;
+  if(s<per){x=x0+s;y=y0;dx=1;dy=0;}
+  else if(s<per*2){x=x0+per;y=y0+(s-per);dx=0;dy=1;}
+  else if(s<per*3){x=x0+per-(s-per*2);y=y0+per;dx=-1;dy=0;}
+  else{x=x0;y=y0+per-(s-per*3);dx=0;dy=-1;}
+  return {x:x,y:y,dx:dx,dy:dy};
+}
+function updatePeds(dt){
+  for(var i=0;i<PEDS.length;i++){
+    var pd=PEDS[i];
+    var pt=pedPathPoint(pd);
+    var wx=pt.x+pd.offX, wy=pt.y+pd.offY;
+    var dBike=pDist(P.x,P.y,wx,wy);
+    if(pd.dodgeT>0){pd.dodgeT-=dt;pd.offX+=pd.dodgeX*dt*3.2;pd.offY+=pd.dodgeY*dt*3.2;}
+    else{
+      pd.offX*=0.9;pd.offY*=0.9;
+      pd.s+=pd.spd*dt;
+      if(dBike<36&&Math.abs(P.speed)>3){ // 骑手靠近：垂直方向躲开
+        pd.dodgeT=0.55;
+        var side=(P.x-wx)*pt.dy-(P.y-wy)*pt.dx>0?1:-1;
+        pd.dodgeX=-pt.dy*side;pd.dodgeY=pt.dx*side;
+        if(Math.abs(pd.offX)>14)pd.offX=14*Math.sign(pd.offX);
+        if(Math.abs(pd.offY)>14)pd.offY=14*Math.sign(pd.offY);
+      }
+    }
+    pt=pedPathPoint(pd);
+    var fx=pt.x+pd.offX, fy=pt.y+pd.offY;
+    var wp=W2D(fx,fy);
+    pd.g.position.set(wp.x,Math.abs(Math.sin(G.t*6.4+pd.ph))*0.05,wp.z);
+    pd.g.rotation.y=Math.atan2(pt.dx,-pt.dy)+Math.PI;
+    pd.x=fx;pd.y=fy;
+    // 碰撞：高速撞人 = 事故
+    if(dBike<13&&Math.abs(P.speed)>17&&G.crashCd<=0){
+      G.crashCd=2;G.shake=0.8;P.speed=0;
+      var dropped=activeOrders().length;
+      G.orders.forEach(function(o){if(o.st==='pick'||o.st==='deli')o.st='gone';});
+      G.rating=Math.max(3,Math.round((G.rating-0.3)*100)/100);G.combo=0;
+      toast('💥 撞到行人！'+(dropped?'手上的订单全掉了 · ':'')+'评分 -0.3');sfx('late');renderPanel();
+    }
+  }
+}
+
+// ============ 粒子（取餐/送达迸发） ============
+var PARTS=null;
+(function initParts(){
+  var N=240,pos=new Float32Array(N*3),col=new Float32Array(N*3);
+  for(var i=0;i<N;i++){pos[i*3+1]=-60;}
+  var geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('color',new THREE.BufferAttribute(col,3));
+  PARTS={pts:new THREE.Points(geo,new THREE.PointsMaterial({size:0.34,vertexColors:true,transparent:true,opacity:0.95,depthWrite:false})),
+    vel:new Float32Array(N*3),life:new Float32Array(N),head:0,N:N};
+  scene.add(PARTS.pts);
+})();
+function spawnBurst(pxx,pyy,hex){
+  var p=W2D(pxx,pyy),c=new THREE.Color(hex);
+  var posA=PARTS.pts.geometry.attributes.position,colA=PARTS.pts.geometry.attributes.color;
+  for(var n=0;n<16;n++){
+    var i=PARTS.head;PARTS.head=(PARTS.head+1)%PARTS.N;
+    posA.setXYZ(i,p.x,0.6,p.z);
+    colA.setXYZ(i,c.r,c.g,c.b);
+    var a=Math.random()*6.28,sp=1.6+Math.random()*3.4;
+    PARTS.vel[i*3]=Math.cos(a)*sp;PARTS.vel[i*3+1]=3+Math.random()*3.4;PARTS.vel[i*3+2]=Math.sin(a)*sp;
+    PARTS.life[i]=0.85;
+  }
+  posA.needsUpdate=true;colA.needsUpdate=true;
+}
+function updateParts(dt){
+  var posA=PARTS.pts.geometry.attributes.position,dirty=false;
+  for(var i=0;i<PARTS.N;i++){
+    if(PARTS.life[i]<=0)continue;
+    PARTS.life[i]-=dt;dirty=true;
+    if(PARTS.life[i]<=0){posA.setY(i,-60);continue;}
+    PARTS.vel[i*3+1]-=7.5*dt;
+    posA.setXYZ(i,posA.getX(i)+PARTS.vel[i*3]*dt,Math.max(0.08,posA.getY(i)+PARTS.vel[i*3+1]*dt),posA.getZ(i)+PARTS.vel[i*3+2]*dt);
+  }
+  if(dirty)posA.needsUpdate=true;
+}
+// ============ 玩家电动车（精细版：风挡/后视镜/骑手手臂/车轮转动/车灯） ============
 var bike=new THREE.Group();
+var wheelF=null,wheelR=null,headlight=null;
 (function buildBike(){
-  function box(w,h,d,c,x,y,z){var m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshLambertMaterial({color:c}));m.position.set(x,y,z);bike.add(m);return m;}
-  function cyl(r,l,c,x,y,z,rx){var m=new THREE.Mesh(new THREE.CylinderGeometry(r,r,l,14),new THREE.MeshLambertMaterial({color:c}));m.rotation.z=Math.PI/2;if(rx)m.rotation.x=rx;m.position.set(x,y,z);bike.add(m);return m;}
+  function box(w,h,d,c,x,y,z){var m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshLambertMaterial({color:c}));m.position.set(x,y,z);m.castShadow=true;bike.add(m);return m;}
+  function wheel(z){
+    var g=new THREE.Group();g.position.set(0,0.3,z);
+    var tire=new THREE.Mesh(new THREE.CylinderGeometry(0.3,0.3,0.13,16),new THREE.MeshLambertMaterial({color:0x1f2937}));
+    tire.rotation.z=Math.PI/2;tire.castShadow=true;g.add(tire);
+    var hub=new THREE.Mesh(new THREE.CylinderGeometry(0.13,0.13,0.14,10),new THREE.MeshLambertMaterial({color:0xd7dde6}));
+    hub.rotation.z=Math.PI/2;g.add(hub);
+    bike.add(g);return g;
+  }
   box(0.5,0.28,1.9,0xffd34d,0,0.5,0);              // 车身
+  box(0.52,0.1,0.6,0xf5b81e,0,0.42,0.72);           // 前踏板罩
   box(0.46,0.3,0.7,0x333f52,0,0.72,-0.55);          // 座垫
-  cyl(0.3,0.12,0x1f2937,0,0.3,0.95);                // 前轮
-  cyl(0.3,0.12,0x1f2937,0,0.3,-0.9);                // 后轮
+  wheelF=wheel(0.95);wheelR=wheel(-0.9);            // 前/后轮（可转动）
   box(0.08,0.6,0.08,0x9aa7b8,0,0.85,0.82);          // 前叉
   box(0.62,0.07,0.07,0x9aa7b8,0,1.16,0.86);         // 车把
+  var shield=new THREE.Mesh(new THREE.PlaneGeometry(0.46,0.42),new THREE.MeshLambertMaterial({color:0xdff2ff,transparent:true,opacity:0.4,side:THREE.DoubleSide}));
+  shield.position.set(0,1.02,0.94);shield.rotation.x=-0.28;bike.add(shield); // 风挡
+  box(0.05,0.16,0.05,0x9aa7b8,-0.34,1.26,0.84);box(0.05,0.16,0.05,0x9aa7b8,0.34,1.26,0.84); // 镜杆
+  box(0.13,0.09,0.03,0x222b38,-0.38,1.36,0.84);box(0.13,0.09,0.03,0x222b38,0.38,1.36,0.84); // 后视镜
+  var lampF=new THREE.Mesh(new THREE.BoxGeometry(0.2,0.12,0.05),new THREE.MeshBasicMaterial({color:0xfff3c0}));lampF.position.set(0,0.88,1.0);bike.add(lampF);
+  var lampT=new THREE.Mesh(new THREE.BoxGeometry(0.16,0.07,0.04),new THREE.MeshBasicMaterial({color:0xe23b3b}));lampT.position.set(0,0.72,-1.13);bike.add(lampT);
+  headlight=new THREE.SpotLight(0xffeec2,0,34,0.46,0.45,1);
+  headlight.position.set(0,0.9,1.0);bike.add(headlight);
+  headlight.target.position.set(0,0,10);bike.add(headlight.target);
   box(0.44,0.62,0.34,0x2563eb,0,1.12,-0.18);        // 骑手身体
+  box(0.11,0.11,0.52,0x2563eb,-0.25,1.1,0.32);box(0.11,0.11,0.52,0x2563eb,0.25,1.1,0.32);   // 手臂
   box(0.16,0.5,0.16,0x334155,-0.16,0.72,0.18);box(0.16,0.5,0.16,0x334155,0.16,0.72,0.18); // 腿
-  var head=new THREE.Mesh(new THREE.SphereGeometry(0.21,14,12),new THREE.MeshLambertMaterial({color:0xffd9b3}));head.position.set(0,1.62,-0.18);bike.add(head);
+  var head=new THREE.Mesh(new THREE.SphereGeometry(0.21,14,12),new THREE.MeshLambertMaterial({color:0xffd9b3}));head.position.set(0,1.62,-0.18);head.castShadow=true;bike.add(head);
   var helm=new THREE.Mesh(new THREE.SphereGeometry(0.24,14,10,0,Math.PI*2,0,1.9),new THREE.MeshLambertMaterial({color:0xffd34d}));helm.position.set(0,1.66,-0.18);bike.add(helm);
   box(0.56,0.5,0.42,0xff8a3d,0,1.18,-0.62);         // 外卖箱
+  box(0.58,0.08,0.44,0xe06f1f,0,1.47,-0.62);        // 箱盖
   scene.add(bike);
 })();
 // 光柱标记（取餐蓝/送达绿）
@@ -244,13 +603,19 @@ function ac(){if(!AC){try{AC=new (window.AudioContext||window.webkitAudioContext
 function beep(f,d,type,g,when){if(muted)return;var a=ac();if(!a)return;var t=a.currentTime+(when||0);var o=a.createOscillator(),v=a.createGain();o.type=type||'sine';o.frequency.value=f;v.gain.setValueAtTime(g||0.08,t);v.gain.exponentialRampToValueAtTime(0.001,t+(d||0.12));o.connect(v);v.connect(a.destination);o.start(t);o.stop(t+(d||0.12)+0.02);}
 function sfx(n){if(n==='new'){beep(880,0.1,'triangle',0.07);beep(1318,0.12,'triangle',0.06,0.09);}else if(n==='grab'){beep(660,0.09,'square',0.05);beep(990,0.1,'square',0.05,0.07);}else if(n==='pick'){beep(523,0.09,'triangle',0.07);beep(784,0.12,'triangle',0.07,0.08);}else if(n==='done'){[523,659,784,1046].forEach(function(f,i){beep(f,0.12,'triangle',0.07,i*0.07);});}else if(n==='late'){beep(220,0.2,'sawtooth',0.05);beep(185,0.25,'sawtooth',0.05,0.15);}else if(n==='day'){[392,523,659,784].forEach(function(f,i){beep(f,0.16,'triangle',0.06,i*0.11);});}}
 var MEL=[523,0,659,0,784,0,659,0,587,0,659,0,880,0,784,0,523,0,659,0,784,0,1046,0,988,0,880,0,784,0,0,0];
-function musicTick(){if(muted||!AC||!G.running)return;var f=MEL[musStep%32];if(f)beep(f,0.16,'triangle',0.015);if(musStep%8===0)beep([131,98,110,98][Math.floor(musStep/8)%4],0.3,'sine',0.028);musStep++;}
-function startMusic(){if(musTimer)return;ac();musTimer=setInterval(musicTick,175);}
+var engOsc=null,engGain=null;
+function musicTick(){
+  if(engGain){var on=!muted&&AC&&G.running&&!G.over;engGain.gain.value=on?0.016+Math.min(0.03,Math.abs(P.speed)*0.0012):0;if(engOsc)engOsc.frequency.value=52+Math.abs(P.speed)*3.4;}
+  if(muted||!AC||!G.running)return;var f=MEL[musStep%32];if(f)beep(f,0.16,'triangle',0.015);if(musStep%8===0)beep([131,98,110,98][Math.floor(musStep/8)%4],0.3,'sine',0.028);musStep++;
+}
+function startMusic(){if(musTimer)return;ac();
+  if(AC&&!engOsc){try{engOsc=AC.createOscillator();engOsc.type='sawtooth';engOsc.frequency.value=52;engGain=AC.createGain();engGain.gain.value=0;var fl=AC.createBiquadFilter();fl.type='lowpass';fl.frequency.value=420;engOsc.connect(fl);fl.connect(engGain);engGain.connect(AC.destination);engOsc.start();}catch(e){}}
+  musTimer=setInterval(musicTick,175);}
 
 // ============ 游戏状态与订单（规则同 2D 版，坐标用原始 px 空间计算） ============
 var DAY_SECONDS=270,GOAL=260;
 (function(){var m=/[?&]day=(\d+)/.exec(location.search);if(m){var v=parseInt(m[1],10);if(v>=15&&v<=900)DAY_SECONDS=v;}})();
-var G={running:false,over:false,day:1,t:0,money:0,rating:5.0,done:0,ontime:0,late:0,bestCombo:0,combo:0,online:true,spawnT:1.2,wx:null,orders:[],oid:1};
+var G={running:false,over:false,day:1,t:0,money:0,rating:5.0,done:0,ontime:0,late:0,bestCombo:0,combo:0,online:true,spawnT:1.2,wx:null,orders:[],oid:1,fines:0,crashCd:0,shake:0,inLightZone:false};
 var WXLIST=[{n:'晴',i:'☀️',sp:1,bonus:0},{n:'多云',i:'⛅',sp:0.97,bonus:0.05},{n:'小雨',i:'🌧️',sp:0.9,bonus:0.2},{n:'大风',i:'💨',sp:0.94,bonus:0.1}];
 var P={x:1500,y:1050,heading:0,speed:0}; // heading: 弧度，0=朝北(-z)
 function pDist(ax,ay,bx,by){return Math.hypot(ax-bx,ay-by);}
@@ -261,7 +626,7 @@ function randDoor(){
   return {x:cxPx+(Math.random()*30-15), y:(b.maxZ+210)*S+26};
 }
 function newDay(){
-  G.t=0;G.money=0;G.done=0;G.ontime=0;G.late=0;G.combo=0;G.bestCombo=0;G.orders=[];G.spawnT=0.8;G.over=false;
+  G.t=0;G.money=0;G.done=0;G.ontime=0;G.late=0;G.combo=0;G.bestCombo=0;G.orders=[];G.spawnT=0.8;G.over=false;G.fines=0;G.crashCd=0;G.shake=0;G.inLightZone=false;
   G.wx=WXLIST[Math.floor(Math.random()*WXLIST.length)];
   P.x=1500;P.y=1050;P.heading=0;P.speed=0;
   rainPts.visible=(G.wx.n==='小雨');
@@ -296,6 +661,7 @@ function completeOrder(o){
   G.money=Math.round((G.money+pay)*10)/10;G.done++;
   if(late){G.late++;G.combo=0;G.rating=Math.max(3,Math.round((G.rating-0.12)*100)/100);sfx('late');toast('超时送达 · 实付 ¥'+pay+' · 评分下降');}
   else{G.ontime++;G.combo++;G.bestCombo=Math.max(G.bestCombo,G.combo);G.rating=Math.min(5,Math.round((G.rating+0.02)*100)/100);sfx('done');toast('送达成功 +¥'+pay+(G.combo>1?' · 连送 '+G.combo+' 单':''));}
+  spawnBurst(o.cust.x,o.cust.y,late?0xf87171:0xffd34d);
   o.st='done';renderPanel();updateTop();
 }
 function toast(msg){var box=document.getElementById('toast');var d=document.createElement('div');d.className='toastItem';d.textContent=msg;box.appendChild(d);setTimeout(function(){d.style.opacity='0';d.style.transition='opacity .4s';},2100);setTimeout(function(){d.remove();},2600);while(box.children.length>3)box.firstChild.remove();}
@@ -377,6 +743,7 @@ function frame(ts){
   bike.position.set(pw.x,0,pw.z);
   bike.rotation.y=Math.PI-P.heading;
   bike.rotation.z=-(keys['a']||keys['arrowleft']||touch.l?0.14:(keys['d']||keys['arrowright']||touch.r?-0.14:0))*Math.min(1,Math.abs(P.speed)/18);
+  if(wheelF){var wsp=P.speed*dt*2.4;wheelF.rotation.x+=wsp;wheelR.rotation.x+=wsp;}
   // 光柱跟随首要目标
   var tgt=primaryTarget();
   pickPillar.visible=!!(tgt&&tgt.kind==='pick');deliPillar.visible=!!(tgt&&tgt.kind==='deli');
@@ -387,12 +754,26 @@ function frame(ts){
   var cx=pw.x-Math.sin(P.heading)*back, cz=pw.z+Math.cos(P.heading)*back;
   camPos.x+=(cx-camPos.x)*Math.min(1,dt*4.5);camPos.z+=(cz-camPos.z)*Math.min(1,dt*4.5);camPos.y+=(hei-camPos.y)*Math.min(1,dt*4.5);
   camera.position.copy(camPos);
+  if(G.shake>0){G.shake-=dt*1.4;camera.position.x+=(Math.random()-0.5)*G.shake*0.9;camera.position.y+=(Math.random()-0.5)*G.shake*0.6;}
+  var targetFov=62+Math.min(7,Math.abs(P.speed)*0.28);
+  if(Math.abs(camera.fov-targetFov)>0.1){camera.fov+=(targetFov-camera.fov)*Math.min(1,dt*3);camera.updateProjectionMatrix();}
   camera.lookAt(pw.x+Math.sin(P.heading)*6,1.1,pw.z-Math.cos(P.heading)*6);
   // 天空随时间
   var dayFrac=G.t/DAY_SECONDS;
   var sky=new THREE.Color().setHSL(0.58,0.5,0.74-dayFrac*0.30);
   scene.background=sky;scene.fog.color.copy(sky);
   sun.intensity=1.05-dayFrac*0.35;
+  // 阴影相机跟随玩家
+  sun.position.set(pw.x+55,95,pw.z+28);
+  sun.target.position.set(pw.x,0,pw.z);
+  // 云漂移
+  for(var ci=0;ci<clouds.length;ci++){clouds[ci].position.x+=dt*1.1;if(clouds[ci].position.x>380)clouds[ci].position.x=-380;}
+  // 黄昏：路灯亮起 + 车灯打开
+  var dusk=Math.max(0,Math.min(1,(dayFrac-0.45)*2.4));
+  lampHeadMat.color.setRGB(0.54+dusk*0.46,0.56+dusk*0.36,0.48-dusk*0.2);
+  if(headlight)headlight.intensity=dusk*1.7;
+  refreshLightInstances();
+  updateParts(dt);
   // 雨跟随
   if(rainPts.visible){rainPts.position.set(pw.x,0,pw.z);var pa=rainPts.geometry.attributes.position;for(var i=0;i<pa.count;i++){var y=pa.getY(i)-dt*38;if(y<0)y=45;pa.setY(i,y);}pa.needsUpdate=true;}
   // 导航 HUD
@@ -410,8 +791,23 @@ function frame(ts){
   drawMini();
   renderer.render(scene,camera);
   __DS3.t=Math.round(G.t*10)/10;__DS3.money=G.money;__DS3.done=G.done;__DS3.orders=G.orders.length;__DS3.active=activeOrders().length;__DS3.over=G.over;
-  __DS3.px=Math.round(P.x);__DS3.py=Math.round(P.y);__DS3.heading=Math.round(P.heading*100)/100;__DS3.speed=Math.round(P.speed*10)/10;
+  __DS3.px=Math.round(P.x);__DS3.py=Math.round(P.y);__DS3.heading=Math.round(P.heading*100)/100;__DS3.speed=Math.round(P.speed*10)/10;__DS3.fines=G.fines;
   if(tgt){__DS3.tx=tgt.x;__DS3.tz=tgt.y;__DS3.phase=tgt.kind;}else{__DS3.tx=0;__DS3.tz=0;__DS3.phase='';}
+}
+// 闯红灯检测：进入路口盒子时按行进轴向判定，每次进入只判一次
+function checkTraffic(){
+  var k=Math.round((P.x-32)/300), m=Math.round((P.y-32)/300);
+  var cx=k*300+32, cy=m*300+32;
+  var inside=Math.abs(P.x-cx)<46&&Math.abs(P.y-cy)<46;
+  if(inside&&!G.inLightZone){
+    G.inLightZone=true;
+    var axis=Math.abs(Math.sin(P.heading))>Math.abs(Math.cos(P.heading))?'EW':'NS';
+    if(lightFor(axis)==='r'&&Math.abs(P.speed)>5){
+      G.fines+=10;
+      G.rating=Math.max(3,Math.round((G.rating-0.04)*100)/100);
+      toast('🚦 闯红灯！罚款 ¥10（日结扣除）· 评分 -0.04');sfx('late');updateTop();
+    }
+  } else if(!inside)G.inLightZone=false;
 }
 function update(dt){
   G.t+=dt;
@@ -445,27 +841,31 @@ function update(dt){
     }}
   P.x=Math.max(30,Math.min(2970,(pw2.x+300)*S));
   P.y=Math.max(30,Math.min(2070,(pw2.z+210)*S));
-  // 订单交互（到达半径 55px 空间 ≈ 11 米）
+  // 活的世界：车流 / 行人 / 红绿灯
+  updateCars(dt);updatePeds(dt);checkTraffic();
+  // 订单交互（到达半径 70px）
   activeOrders().forEach(function(o){
     if(o.st==='pick'&&pDist(P.x,P.y,o.shop.x,o.shop.y)<70){
-      if(G.t>=o.readyAt){o.st='deli';sfx('pick');toast('取餐成功 · 送往顾客');renderPanel();}
+      if(G.t>=o.readyAt){o.st='deli';sfx('pick');toast('取餐成功 · 送往顾客');spawnBurst(o.shop.x,o.shop.y,0x38bdf8);renderPanel();}
       else if(!o._waited){o._waited=true;toast('出餐中，还需等 '+Math.ceil(o.readyAt-G.t)+' 秒');}
     }
     if(o.st==='deli'&&pDist(P.x,P.y,o.cust.x,o.cust.y)<70)completeOrder(o);
   });
-  G.orders=G.orders.filter(function(o){return o.st!=='done'&&!(o.st==='pool'&&G.t-o.born>45);});
+  G.orders=G.orders.filter(function(o){return o.st!=='done'&&o.st!=='gone'&&!(o.st==='pool'&&G.t-o.born>45);});
   updateTop();
   if(Math.floor(G.t*2)!==Math.floor((G.t-dt)*2))renderPanel();
 }
 function endDay(){
   G.over=true;sfx('day');
   var rate=G.done?Math.round(G.ontime/G.done*100):0;
-  document.getElementById('dayTitle').textContent='第 '+G.day+' 天收工'+(G.money>=GOAL?' · 达标 🎉':'');
+  var net=Math.round((G.money-G.fines)*10)/10;
+  document.getElementById('dayTitle').textContent='第 '+G.day+' 天收工'+(net>=GOAL?' · 达标 🎉':'');
   document.getElementById('dayStats').innerHTML=
     '<span>今日收入<b>¥'+G.money.toFixed(1)+'</b></span><span>完成订单<b>'+G.done+' 单</b></span>'
    +'<span>准时率<b>'+rate+'%</b></span><span>超时<b>'+G.late+' 单</b></span>'
-   +'<span>最高连送<b>'+G.bestCombo+' 单</b></span><span>当前评分<b>★'+G.rating.toFixed(1)+'</b></span>';
-  document.getElementById('dayComment').textContent=G.money>=GOAL?'目标 ¥'+GOAL+' 达成，明天继续冲。':'差 ¥'+(GOAL-G.money).toFixed(1)+' 达标——先抢顺路单，一次带 2-3 单再跑。';
+   +'<span>最高连送<b>'+G.bestCombo+' 单</b></span><span>当前评分<b>★'+G.rating.toFixed(1)+'</b></span>'
+   +(G.fines>0?'<span>闯红灯罚款<b>-¥'+G.fines+'</b></span><span>净收入<b>¥'+net.toFixed(1)+'</b></span>':'');
+  document.getElementById('dayComment').textContent=net>=GOAL?'目标 ¥'+GOAL+' 达成，明天继续冲。':'差 ¥'+(GOAL-net).toFixed(1)+' 达标——先抢顺路单，一次带 2-3 单再跑'+(G.fines>0?'，红灯别硬闯':'')+'。';
   document.getElementById('dayOverlay').style.display='flex';
 }
 document.getElementById('startBtn').addEventListener('click',function(){document.getElementById('startOverlay').style.display='none';G.running=true;newDay();startMusic();});
